@@ -2,6 +2,7 @@ import os
 import json
 import pickle
 import argparse
+from typing import List 
 
 import numpy as np
 from tqdm import tqdm
@@ -69,7 +70,7 @@ class Feeder_kinetics(Dataset):
         with open(label_path) as f:
             label_info = json.load(f)
 
-        sample_id = [name.split('.')[0] for name in self.sample_name]
+        sample_id = [name.split('.')[0] for name in self.sample_name] # remove ".json extension"
         self.label = np.array([label_info[id]['label_index'] for id in sample_id])
         has_skeleton = np.array([label_info[id]['has_skeleton'] for id in sample_id])
 
@@ -91,7 +92,7 @@ class Feeder_kinetics(Dataset):
     def __iter__(self):
         return self
 
-    def __getitem__(self, index):
+    def __getitem__(self, index) -> List[np.ndarray, int]:
 
         # output shape (C, T, V, M)
         # get data
@@ -109,25 +110,25 @@ class Feeder_kinetics(Dataset):
                     break
                 pose = skeleton_info['pose']
                 score = skeleton_info['score']
-                data_numpy[0, frame_index, :, m] = pose[0::2]
-                data_numpy[1, frame_index, :, m] = pose[1::2]
-                data_numpy[2, frame_index, :, m] = score
+                data_numpy[0, frame_index, :, m] = pose[0::2] # get x-coord. 
+                data_numpy[1, frame_index, :, m] = pose[1::2] # get y-coord.
+                data_numpy[2, frame_index, :, m] = score # the confidence score of this joint point detected by the OpenPose.
 
         # centralization
-        data_numpy[0:2] = data_numpy[0:2] - 0.5
-        data_numpy[1:2] = -data_numpy[1:2]
-        data_numpy[0][data_numpy[2] == 0] = 0
-        data_numpy[1][data_numpy[2] == 0] = 0
+        data_numpy[0:2] = data_numpy[0:2] - 0.5 # x-axis: [0, 1] -> [-.5, .5]
+        data_numpy[1:2] = -data_numpy[1:2]      # invery y-axis 
+        data_numpy[0][data_numpy[2] == 0] = 0   # delete x points wherer the score is 0
+        data_numpy[1][data_numpy[2] == 0] = 0   # delete y points where the score is 0
 
         # get & check label index
         label = video_info['label_index']
         assert (self.label[index] == label)
 
-        # sort by score
+        # sort person by score under each frame (max to min), then cut 5 person into 2 at the end. 
+        # note: data_numpy.shape = (3, 100, 18, 5) but data_numpy[:, t, :, s].shape = (5, 3, 18), meaning that the np automatically puts the final dimenstion permuted by s into the first dimension. Hence we have to transpose it back. 
         sort_index = (-data_numpy[2, :, :, :].sum(axis=1)).argsort(axis=1)
         for t, s in enumerate(sort_index):
-            data_numpy[:, t, :, :] = data_numpy[:, t, :, s].transpose((1, 2,
-                                                                       0))
+            data_numpy[:, t, :, :] = data_numpy[:, t, :, s].transpose((1, 2, 0))
         data_numpy = data_numpy[:, :, :, 0:self.num_person_out]
 
         return data_numpy, label
@@ -148,6 +149,7 @@ def gendata(data_path, label_path,
     sample_name = feeder.sample_name
     sample_label = []
 
+    # default padding value is 0 when any dimesion is not enough to fill in the array.
     fp = np.zeros((len(sample_name), 3, max_frame, num_joint, num_person_out), dtype=np.float32)
 
     for i, s in enumerate(tqdm(sample_name)):

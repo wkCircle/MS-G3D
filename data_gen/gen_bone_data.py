@@ -45,14 +45,14 @@ if __name__ == "__main__":
             try:
                 data = np.load('../data/{}/{}_data_joint.npy'.format(benchmark, part), mmap_mode='r')
                 N, C, T, V, M = data.shape
-                fp_sp = open_memmap(
+                fp_sp = open_memmap( # link disk to RAM to save I/O operations in large file.
                     '../data/{}/{}_data_bone.npy'.format(benchmark, part),
                     dtype='float32',
                     mode='w+',
                     shape=(N, 3, T, V, M))
 
                 fp_sp[:, :C, :, :, :] = data
-                for v1, v2 in tqdm(bone_pairs[benchmark]):
+                for v1, v2 in tqdm(bone_pairs[benchmark]): # store bone as a 2-dim vector (x1-x2, y1-y2). store the differenced score.
                     if benchmark != 'kinetics':
                         v1 -= 1
                         v2 -= 1

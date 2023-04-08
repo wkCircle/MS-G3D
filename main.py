@@ -18,7 +18,7 @@ import torch.optim as optim
 from tqdm import tqdm
 from tensorboardX import SummaryWriter
 from torch.optim.lr_scheduler import MultiStepLR
-import apex
+# import apex
 
 from utils import count_params, import_class
 
@@ -137,12 +137,12 @@ def get_parser():
     parser.add_argument(
         '--half',
         action='store_true',
-        help='Use half-precision (FP16) training')
-    parser.add_argument(
-        '--amp-opt-level',
-        type=int,
-        default=1,
-        help='NVIDIA Apex AMP optimization level')
+        help='Use half-precision (FP16) training. (This arg is shut-down currently by myself.)')
+    # parser.add_argument(
+    #     '--amp-opt-level',
+    #     type=int,
+    #     default=1,
+    #     help='NVIDIA Apex AMP optimization level')
 
     parser.add_argument(
         '--base-lr',
@@ -258,16 +258,17 @@ class Processor():
         self.best_acc_epoch = 0
 
         if self.arg.half:
-            self.print_log('*************************************')
-            self.print_log('*** Using Half Precision Training ***')
-            self.print_log('*************************************')
-            self.model, self.optimizer = apex.amp.initialize(
-                self.model,
-                self.optimizer,
-                opt_level=f'O{self.arg.amp_opt_level}'
-            )
-            if self.arg.amp_opt_level != 1:
-                self.print_log('[WARN] nn.DataParallel is not yet supported by amp_opt_level != "O1"')
+            # self.print_log('*************************************')
+            # self.print_log('*** Using Half Precision Training ***')
+            # self.print_log('*************************************')
+            # self.model, self.optimizer = apex.amp.initialize(
+            #     self.model,
+            #     self.optimizer,
+            #     opt_level=f'O{self.arg.amp_opt_level}'
+            # )
+            # if self.arg.amp_opt_level != 1:
+            #     self.print_log('[WARN] nn.DataParallel is not yet supported by amp_opt_level != "O1"')
+            pass 
 
         if type(self.arg.device) is list:
             if len(self.arg.device) > 1:
@@ -279,6 +280,7 @@ class Processor():
                 )
 
     def load_model(self):
+        # output device is always the first element of the --device arg.
         output_device = self.arg.device[0] if type(
             self.arg.device) is list else self.arg.device
         self.output_device = output_device
@@ -503,8 +505,9 @@ class Processor():
                 loss = self.loss(output, batch_label) / splits
 
                 if self.arg.half:
-                    with apex.amp.scale_loss(loss, self.optimizer) as scaled_loss:
-                        scaled_loss.backward()
+                    # with apex.amp.scale_loss(loss, self.optimizer) as scaled_loss:
+                    #     scaled_loss.backward()
+                    pass 
                 else:
                     loss.backward()
 
@@ -669,6 +672,7 @@ class Processor():
 
 
 def str2bool(v):
+    """Help parse user input args for boolean types."""
     if v.lower() in ('yes', 'true', 't', 'y', '1'):
         return True
     elif v.lower() in ('no', 'false', 'f', 'n', '0'):
@@ -687,9 +691,7 @@ def main():
             default_arg = yaml.load(f)
         key = vars(p).keys()
         for k in default_arg.keys():
-            if k not in key:
-                print('WRONG ARG:', k)
-                assert (k in key)
+            assert k in key, f'WRONG ARG {k}'
         parser.set_defaults(**default_arg)
 
     arg = parser.parse_args()

@@ -3,6 +3,9 @@
 .idea/
 runs/
 work_dir/
+kinetics_raw/
+kinetics/
+.vscode/
 
 ### Python template
 # Byte-compiled / optimized / DLL files
