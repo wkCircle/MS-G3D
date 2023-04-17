@@ -153,7 +153,7 @@ class Model(nn.Module):
     def forward(self, x):
         N, C, T, V, M = x.size()
         x = x.permute(0, 4, 3, 1, 2).contiguous().view(N, M * V * C, T)
-        x = self.data_bn(x)
+        x = self.data_bn(x) # mean/std across N and T and apply learnable scales of shape M*V*C
         x = x.view(N * M, V, C, T).permute(0,2,3,1).contiguous()
 
         # Apply activation to the sum of the pathways
@@ -172,6 +172,7 @@ class Model(nn.Module):
         out = out.mean(3)   # Global Average Pooling (Spatial+Temporal)
         out = out.mean(1)   # Average pool number of bodies in the sequence
 
+        # output is actually a logit, then loss_fn CrossEntropy can directly handle it.
         out = self.fc(out)
         return out
 

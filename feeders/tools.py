@@ -16,20 +16,8 @@ def temporal_slice(data_numpy, step):
         (0, 1, 3, 2, 4)).reshape(C, T / step, V, step * M)
 
 
-def mean_subtractor(data_numpy, mean):
-    # input: C,T,V,M
-    # naive version
-    if mean == 0:
-        return
-    C, T, V, M = data_numpy.shape
-    valid_frame = (data_numpy != 0).sum(axis=3).sum(axis=2).sum(axis=0) > 0
-    begin = valid_frame.argmax()
-    end = len(valid_frame) - valid_frame[::-1].argmax()
-    data_numpy[:, :end, :, :] = data_numpy[:, :end, :, :] - mean
-    return data_numpy
-
-
 def auto_pading(data_numpy, size, random_pad=False):
+    """autdo pad the data with 0 values when T (number of frames) in data is smaller than size."""
     C, T, V, M = data_numpy.shape
     if T < size:
         begin = random.randint(0, size - T) if random_pad else 0
@@ -41,6 +29,10 @@ def auto_pading(data_numpy, size, random_pad=False):
 
 
 def random_choose(data_numpy, size, auto_pad=True):
+    """
+    randomly select an interval of frames of length ``size`` of the input data.
+    When size=-1, the returned data will be of 0 frame.
+    """
     C, T, V, M = data_numpy.shape
     if T == size:
         return data_numpy
@@ -55,10 +47,19 @@ def random_choose(data_numpy, size, auto_pad=True):
 
 
 def random_move(data_numpy,
-                angle_candidate=[-10., -5., 0., 5., 10.],
+                angle_candidate=[-10., -5., 0., 5., 10.], # degree
                 scale_candidate=[0.9, 1.0, 1.1],
                 transform_candidate=[-0.2, -0.1, 0.0, 0.1, 0.2],
                 move_time_candidate=[1]):
+    """
+    Apply rotation/scaling/affine transformation to the input data. 
+
+    angle_candidate (list): candidate values to be randomly picked for smooth rotation across frames. 
+    scale_candidate (list): candidate values to be randomly picked for smooth scaling across frames. 
+    transform_candidate (list): candidate values to be randomly picked for smooth scaling across frames. 
+    move_imte_candidate (list): candidate values to be randomly picked to decide the anchor frames. 
+        In between a pair of anchor frames the angle/scale/transformation are applied smoothly to each frame via a linspace. When it comes to next pair of anchor frames, the same procedure is applied but the random values may alter.
+    """
     # input: C,T,V,M
     C, T, V, M = data_numpy.shape
     move_time = random.choice(move_time_candidate)
@@ -78,14 +79,15 @@ def random_move(data_numpy,
 
     # linspace
     for i in range(num_node - 1):
+        # degree -> arc length/radians  cuz np.sin/cos requires so.
         a[node[i]:node[i + 1]] = np.linspace(
             A[i], A[i + 1], node[i + 1] - node[i]) * np.pi / 180
-        s[node[i]:node[i + 1]] = np.linspace(S[i], S[i + 1],
-                                             node[i + 1] - node[i])
-        t_x[node[i]:node[i + 1]] = np.linspace(T_x[i], T_x[i + 1],
-                                               node[i + 1] - node[i])
-        t_y[node[i]:node[i + 1]] = np.linspace(T_y[i], T_y[i + 1],
-                                               node[i + 1] - node[i])
+        s[node[i]:node[i + 1]] = np.linspace(
+            S[i], S[i + 1], node[i + 1] - node[i])
+        t_x[node[i]:node[i + 1]] = np.linspace(
+            T_x[i], T_x[i + 1], node[i + 1] - node[i])
+        t_y[node[i]:node[i + 1]] = np.linspace(
+            T_y[i], T_y[i + 1], node[i + 1] - node[i])
 
     theta = np.array([[np.cos(a) * s, -np.sin(a) * s],
                       [np.sin(a) * s, np.cos(a) * s]])
@@ -102,58 +104,18 @@ def random_move(data_numpy,
 
 
 def random_shift(data_numpy):
+    """
+    randomly right-shift/postone the input data. The random shift value is restricted so that 
+    the first and final valid frame will not be cut.
+    """
     C, T, V, M = data_numpy.shape
     data_shift = np.zeros(data_numpy.shape)
     valid_frame = (data_numpy != 0).sum(axis=3).sum(axis=2).sum(axis=0) > 0
-    begin = valid_frame.argmax()
-    end = len(valid_frame) - valid_frame[::-1].argmax()
+    begin = valid_frame.argmax() # the first True pose.
+    end = len(valid_frame) - valid_frame[::-1].argmax() # total len - the final True posi.
 
     size = end - begin
     bias = random.randint(0, T - size)
     data_shift[:, bias:bias + size, :, :] = data_numpy[:, begin:end, :, :]
 
     return data_shift
-
-
-def openpose_match(data_numpy):
-    C, T, V, M = data_numpy.shape
-    assert (C == 3)
-    score = data_numpy[2, :, :, :].sum(axis=1)
-    # the rank of body confidence in each frame (shape: T-1, M)
-    rank = (-score[0:T - 1]).argsort(axis=1).reshape(T - 1, M)
-
-    # data of frame 1
-    xy1 = data_numpy[0:2, 0:T - 1, :, :].reshape(2, T - 1, V, M, 1)
-    # data of frame 2
-    xy2 = data_numpy[0:2, 1:T, :, :].reshape(2, T - 1, V, 1, M)
-    # square of distance between frame 1&2 (shape: T-1, M, M)
-    distance = ((xy2 - xy1) ** 2).sum(axis=2).sum(axis=0)
-
-    # match pose
-    forward_map = np.zeros((T, M), dtype=int) - 1
-    forward_map[0] = range(M)
-    for m in range(M):
-        choose = (rank == m)
-        forward = distance[choose].argmin(axis=1)
-        for t in range(T - 1):
-            distance[t, :, forward[t]] = np.inf
-        forward_map[1:][choose] = forward
-    assert (np.all(forward_map >= 0))
-
-    # string data
-    for t in range(T - 1):
-        forward_map[t + 1] = forward_map[t + 1][forward_map[t]]
-
-    # generate data
-    new_data_numpy = np.zeros(data_numpy.shape)
-    for t in range(T):
-        new_data_numpy[:, t, :, :] = data_numpy[:, t, :, forward_map[
-                                                             t]].transpose(1, 2, 0)
-    data_numpy = new_data_numpy
-
-    # score sort
-    trace_score = data_numpy[2, :, :, :].sum(axis=1).sum(axis=0)
-    rank = (-trace_score).argsort()
-    data_numpy = data_numpy[:, :, :, rank]
-
-    return data_numpy
