@@ -6,6 +6,8 @@ work_dir/
 kinetics_raw/
 kinetics/
 .vscode/
+asl-signs_raw/
+asl-signs/
 
 ### Python template
 # Byte-compiled / optimized / DLL files

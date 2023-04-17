@@ -9,19 +9,19 @@ import pickle
 import shutil
 import inspect
 import argparse
-from collections import OrderedDict, defaultdict
+from pathlib import Path 
+from collections import defaultdict
+import functools as ft 
 
 import torch
 import numpy as np
 import torch.nn as nn
 import torch.optim as optim
 from tqdm import tqdm
-from tensorboardX import SummaryWriter
+from torch.utils.tensorboard import SummaryWriter
 from torch.optim.lr_scheduler import MultiStepLR
-# import apex
 
 from utils import count_params, import_class
-
 
 
 def init_seed(seed):
@@ -30,6 +30,18 @@ def init_seed(seed):
     np.random.seed(seed)
     random.seed(seed)
 
+def worker_seed_fn(worker_id: int, seed: int=42):
+    # give workers different seeds
+    return init_seed(seed + worker_id + 1)
+
+def str2bool(v):
+    """Help parse user input args for boolean types."""
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
 
 def get_parser():
     # parameter priority: command line > config file > default
@@ -37,12 +49,13 @@ def get_parser():
 
     parser.add_argument(
         '--work-dir',
-        type=str,
-        required=True,
+        type=Path,
+        # required=True,
         help='the work folder for storing results')
     parser.add_argument('--model_saved_name', default='')
     parser.add_argument(
         '--config',
+        type=Path, 
         default='./config/nturgbd-cross-view/test_bone.yaml',
         help='path to the configuration file')
     parser.add_argument(
@@ -54,16 +67,11 @@ def get_parser():
         '--phase',
         default='train',
         help='must be train or test')
-    parser.add_argument(
-        '--save-score',
-        type=str2bool,
-        default=False,
-        help='if ture, the classification score will be stored')
 
     parser.add_argument(
         '--seed',
         type=int,
-        default=random.randrange(200),
+        default=42, # random.randrange(200),
         help='random seed')
     parser.add_argument(
         '--log-interval',
@@ -135,16 +143,6 @@ def get_parser():
         nargs='+',
         help='the name of weights which will be ignored in the initialization')
     parser.add_argument(
-        '--half',
-        action='store_true',
-        help='Use half-precision (FP16) training. (This arg is shut-down currently by myself.)')
-    # parser.add_argument(
-    #     '--amp-opt-level',
-    #     type=int,
-    #     default=1,
-    #     help='NVIDIA Apex AMP optimization level')
-
-    parser.add_argument(
         '--base-lr',
         type=float,
         default=0.01,
@@ -158,7 +156,7 @@ def get_parser():
     parser.add_argument(
         '--device',
         type=int,
-        default=0,
+        default=list(range(torch.cuda.device_count())), 
         nargs='+',
         help='the indexes of GPUs for training or testing')
     parser.add_argument(
@@ -202,11 +200,11 @@ def get_parser():
         help='weight decay for optimizer')
     parser.add_argument(
         '--optimizer-states',
-        type=str,
+        type=Path,
         help='path of previously saved optimizer states')
     parser.add_argument(
         '--checkpoint',
-        type=str,
+        type=Path,
         help='path of previously saved training checkpoint')
     parser.add_argument(
         '--debug',
@@ -226,10 +224,10 @@ class Processor():
         if arg.phase == 'train':
             # Added control through the command line
             arg.train_feeder_args['debug'] = arg.train_feeder_args['debug'] or self.arg.debug
-            logdir = os.path.join(arg.work_dir, 'trainlogs')
+            logdir = Path(arg.work_dir) / 'trainlogs'
             if not arg.train_feeder_args['debug']:
                 # logdir = arg.model_saved_name
-                if os.path.isdir(logdir):
+                if logdir.is_dir():
                     print(f'log_dir {logdir} already exists')
                     if arg.assume_yes:
                         answer = 'y'
@@ -241,10 +239,10 @@ class Processor():
                     else:
                         print('Dir not removed:', logdir)
 
-                self.train_writer = SummaryWriter(os.path.join(logdir, 'train'), 'train')
-                self.val_writer = SummaryWriter(os.path.join(logdir, 'val'), 'val')
+                self.train_writer = SummaryWriter(logdir/'train', 'train')
+                self.val_writer = SummaryWriter(logdir/'val', 'val')
             else:
-                self.train_writer = SummaryWriter(os.path.join(logdir, 'debug'), 'debug')
+                self.train_writer = SummaryWriter(logdir/'debug', 'debug')
 
         self.load_model()
         self.load_param_groups()
@@ -256,20 +254,8 @@ class Processor():
         self.lr = self.arg.base_lr
         self.best_acc = 0
         self.best_acc_epoch = 0
-
-        if self.arg.half:
-            # self.print_log('*************************************')
-            # self.print_log('*** Using Half Precision Training ***')
-            # self.print_log('*************************************')
-            # self.model, self.optimizer = apex.amp.initialize(
-            #     self.model,
-            #     self.optimizer,
-            #     opt_level=f'O{self.arg.amp_opt_level}'
-            # )
-            # if self.arg.amp_opt_level != 1:
-            #     self.print_log('[WARN] nn.DataParallel is not yet supported by amp_opt_level != "O1"')
-            pass 
-
+  
+        # data parallel if multiple devices
         if type(self.arg.device) is list:
             if len(self.arg.device) > 1:
                 self.print_log(f'{len(self.arg.device)} GPUs available, using DataParallel')
@@ -286,9 +272,9 @@ class Processor():
         self.output_device = output_device
         Model = import_class(self.arg.model)
 
-        # Copy model file and main
-        shutil.copy2(inspect.getfile(Model), self.arg.work_dir)
-        shutil.copy2(os.path.join('.', __file__), self.arg.work_dir)
+        # Copy model file and main into the work_dir
+        # shutil.copy2(inspect.getfile(Model), self.arg.work_dir)
+        # shutil.copy2(os.path.join('.', __file__), self.arg.work_dir)
 
         self.model = Model(**self.arg.model_args).cuda(output_device)
         self.loss = nn.CrossEntropyLoss().cuda(output_device)
@@ -308,7 +294,7 @@ class Processor():
             else:
                 weights = torch.load(self.arg.weights)
 
-            weights = OrderedDict(
+            weights = dict(
                 [[k.split('module.')[-1],
                   v.cuda(output_device)] for k, v in weights.items()])
 
@@ -383,46 +369,46 @@ class Processor():
         Feeder = import_class(self.arg.feeder)
         self.data_loader = dict()
 
-        def worker_seed_fn(worker_id):
-            # give workers different seeds
-            return init_seed(self.arg.seed + worker_id + 1)
-
         if self.arg.phase == 'train':
             self.data_loader['train'] = torch.utils.data.DataLoader(
                 dataset=Feeder(**self.arg.train_feeder_args),
                 batch_size=self.arg.batch_size,
                 shuffle=True,
-                num_workers=self.arg.num_worker,
+                num_workers=0, #self.arg.num_worker, # NOTE: set to 0 if error.
                 drop_last=True,
-                worker_init_fn=worker_seed_fn)
+                worker_init_fn=ft.partial(worker_seed_fn, seed=self.arg.seed)
+            )
 
         self.data_loader['test'] = torch.utils.data.DataLoader(
             dataset=Feeder(**self.arg.test_feeder_args),
             batch_size=self.arg.test_batch_size,
             shuffle=False,
-            num_workers=self.arg.num_worker,
+            num_workers=0, #self.arg.num_worker,
             drop_last=False,
-            worker_init_fn=worker_seed_fn)
+            worker_init_fn=ft.partial(worker_seed_fn, seed=self.arg.seed)
+        )
 
     def save_arg(self):
         # save arg
         arg_dict = vars(self.arg)
-        if not os.path.exists(self.arg.work_dir):
-            os.makedirs(self.arg.work_dir)
-        with open(os.path.join(self.arg.work_dir, 'config.yaml'), 'w') as f:
-            yaml.dump(arg_dict, f)
+        arg_dict = {k: (v.as_posix() if isinstance(v, Path) else v) 
+                    for k, v in arg_dict.items()}
+        if not self.arg.work_dir.is_dir():
+            self.arg.work_dir.mkdir(parents=True, exist_ok=True)
+        with (self.arg.work_dir/'config.yaml').open('w') as f:
+            yaml.safe_dump(arg_dict, f, )
 
     def print_time(self):
         localtime = time.asctime(time.localtime(time.time()))
         self.print_log(f'Local current time: {localtime}')
 
-    def print_log(self, s, print_time=True):
+    def print_log(self, s: str, print_time=True):
         if print_time:
             localtime = time.asctime(time.localtime(time.time()))
             s = f'[ {localtime} ] {s}'
         print(s)
         if self.arg.print_log:
-            with open(os.path.join(self.arg.work_dir, 'log.txt'), 'a') as f:
+            with (self.arg.work_dir/'log.txt').open('a') as f:
                 print(s, file=f)
 
     def record_time(self):
@@ -435,9 +421,9 @@ class Processor():
         return split_time
 
     def save_states(self, epoch, states, out_folder, out_name):
-        out_folder_path = os.path.join(self.arg.work_dir, out_folder)
-        out_path = os.path.join(out_folder_path, out_name)
-        os.makedirs(out_folder_path, exist_ok=True)
+        out_folder_path = self.arg.work_dir / out_folder
+        out_path = out_folder_path / out_name
+        out_folder_path.mkdir(parents=True, exist_ok=True)
         torch.save(states, out_path)
 
     def save_checkpoint(self, epoch, out_folder='checkpoints'):
@@ -452,7 +438,7 @@ class Processor():
 
     def save_weights(self, epoch, out_folder='weights'):
         state_dict = self.model.state_dict()
-        weights = OrderedDict([
+        weights = dict([
             [k.split('module.')[-1], v.cpu()]
             for k, v in state_dict.items()
         ])
@@ -471,6 +457,7 @@ class Processor():
         current_lr = self.optimizer.param_groups[0]['lr']
         self.print_log(f'Training epoch: {epoch + 1}, LR: {current_lr:.4f}')
 
+        scaler = torch.cuda.amp.GradScaler()
         process = tqdm(loader, dynamic_ncols=True)
         for batch_idx, (data, label, index) in enumerate(process):
             self.global_step += 1
@@ -480,7 +467,7 @@ class Processor():
                 label = label.long().cuda(self.output_device)
             timer['dataloader'] += self.split_time()
 
-            # backward
+            # backward init 
             self.optimizer.zero_grad()
 
             ############## Gradient Accumulation for Smaller Batches ##############
@@ -495,21 +482,18 @@ class Processor():
                 batch_data, batch_label = data[left:right], label[left:right]
 
                 # forward
-                output = self.model(batch_data)
-                if isinstance(output, tuple):
-                    output, l1 = output
-                    l1 = l1.mean()
-                else:
-                    l1 = 0
+                with torch.cuda.amp.autocast():
+                    output = self.model(batch_data)
+                    if isinstance(output, tuple):
+                        output, l1 = output
+                        l1 = l1.mean()
+                    else:
+                        l1 = 0
+                    loss = self.loss(output, batch_label) / splits
 
-                loss = self.loss(output, batch_label) / splits
-
-                if self.arg.half:
-                    # with apex.amp.scale_loss(loss, self.optimizer) as scaled_loss:
-                    #     scaled_loss.backward()
-                    pass 
-                else:
-                    loss.backward()
+                # backward 
+                scaler.scale(loss).backward()
+                
 
                 loss_values.append(loss.item())
                 timer['model'] += self.split_time()
@@ -523,11 +507,10 @@ class Processor():
                 self.train_writer.add_scalar('acc', acc, self.global_step)
                 self.train_writer.add_scalar('loss', loss.item() * splits, self.global_step)
                 self.train_writer.add_scalar('loss_l1', l1, self.global_step)
-
             #####################################
 
-            # torch.nn.utils.clip_grad_norm_(self.model.parameters(), 2)
-            self.optimizer.step()
+            scaler.step(self.optimizer)
+            scaler.update()
 
             # statistics
             self.lr = self.optimizer.param_groups[0]['lr']
@@ -559,7 +542,7 @@ class Processor():
             self.save_weights(epoch + 1)
             self.save_checkpoint(epoch + 1)
 
-    def eval(self, epoch, save_score=False, loader_name=['test'], wrong_file=None, result_file=None):
+    def eval(self, epoch, loader_name=['test'], wrong_file=None, result_file=None):
         # Skip evaluation if too early
         if epoch + 1 < self.arg.eval_start:
             return
@@ -576,6 +559,7 @@ class Processor():
                 loss_values = []
                 score_batches = []
                 step = 0
+                
                 process = tqdm(self.data_loader[ln], dynamic_ncols=True)
                 for batch_idx, (data, label, index) in enumerate(process):
                     data = data.float().cuda(self.output_device)
@@ -620,10 +604,6 @@ class Processor():
             for k in self.arg.show_topk:
                 self.print_log(f'\tTop {k}: {100 * self.data_loader[ln].dataset.top_k(score, k):.2f}%')
 
-            if save_score:
-                with open('{}/epoch{}_{}_score.pkl'.format(self.arg.work_dir, epoch + 1, ln), 'wb') as f:
-                    pickle.dump(score_dict, f)
-
         # Empty cache after evaluation
         torch.cuda.empty_cache()
 
@@ -635,7 +615,7 @@ class Processor():
             for epoch in range(self.arg.start_epoch, self.arg.num_epoch):
                 save_model = ((epoch + 1) % self.arg.save_interval == 0) or (epoch + 1 == self.arg.num_epoch)
                 self.train(epoch, save_model=save_model)
-                self.eval(epoch, save_score=self.arg.save_score, loader_name=['test'])
+                self.eval(epoch, loader_name=['test'])
 
             num_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
             self.print_log(f'Best accuracy: {self.best_acc}')
@@ -650,8 +630,8 @@ class Processor():
 
         elif self.arg.phase == 'test':
             if not self.arg.test_feeder_args['debug']:
-                wf = os.path.join(self.arg.work_dir, 'wrong-samples.txt')
-                rf = os.path.join(self.arg.work_dir, 'right-samples.txt')
+                wf = self.arg.work_dir / 'wrong-samples.txt'
+                rf = self.arg.work_dir / 'right-samples.txt'
             else:
                 wf = rf = None
             if self.arg.weights is None:
@@ -662,7 +642,6 @@ class Processor():
 
             self.eval(
                 epoch=0,
-                save_score=self.arg.save_score,
                 loader_name=['test'],
                 wrong_file=wf,
                 result_file=rf
@@ -671,24 +650,14 @@ class Processor():
             self.print_log('Done.\n')
 
 
-def str2bool(v):
-    """Help parse user input args for boolean types."""
-    if v.lower() in ('yes', 'true', 't', 'y', '1'):
-        return True
-    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
-        return False
-    else:
-        raise argparse.ArgumentTypeError('Boolean value expected.')
-
-
 def main():
     parser = get_parser()
 
-    # load arg form config file
+    # load arg form config file as default arg (user input command comes to 1st priority)
     p = parser.parse_args()
     if p.config is not None:
         with open(p.config, 'r') as f:
-            default_arg = yaml.load(f)
+            default_arg = yaml.safe_load(f)
         key = vars(p).keys()
         for k in default_arg.keys():
             assert k in key, f'WRONG ARG {k}'
