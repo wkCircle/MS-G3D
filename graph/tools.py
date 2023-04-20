@@ -1,6 +1,6 @@
 import numpy as np
 
-
+# spatial graphs
 def edge2mat(link, num_node):
     A = np.zeros((num_node, num_node))
     for i, j in link:
@@ -27,6 +27,7 @@ def get_spatial_graph(num_node, self_link, inward, outward):
     return A
 
 
+# graph model
 def k_adjacency(A, k, with_self=False, self_factor=1):
     assert isinstance(A, np.ndarray)
     I = np.eye(len(A), dtype=A.dtype)
