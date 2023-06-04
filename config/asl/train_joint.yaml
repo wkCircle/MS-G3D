@@ -6,7 +6,6 @@ feeder: feeders.feeder.Feeder
 train_feeder_args:
   data_path: ./data/asl-signs/train_data_joint.npy
   label_path: ./data/asl-signs/train_label.pkl
-  debug: False
   # random_choose: False
   # random_shift: False
   # random_move: False
@@ -21,30 +20,27 @@ test_feeder_args:
 model: model.msg3d.Model
 model_args:
   num_class: 250
-  num_point: 65 # number of landmarks
+  num_point: 50 # number of landmarks
   num_person: 1
   num_gcn_scales: 8
   num_g3d_scales: 8
   graph: graph.asl.AdjMatrixGraph
 
 # optim
-# weight_decay: 0.0005
+optimizer: SGD
+nesterov: True # only works for SGD 
 weight_decay: 0.0003
-# base_lr: 0.05
-base_lr: 0.1
+# weight_decay: 0.0005
+base_lr: 0.05
 step: [45, 55]
 
 # training
-num_epoch: 10 # 65
-# device: [0, 1]
+num_worker: 0 # delete this when in kaggle
+num_epoch: 20 # 65
 device: 0
 batch_size: 32
-# batch_size: 128
 forward_batch_size: 16
-# forward_batch_size: 64
 test_batch_size: 32
-# test_batch_size: 128
-nesterov: True
 
 
 

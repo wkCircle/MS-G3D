@@ -182,17 +182,18 @@ if __name__ == "__main__":
     import sys
     sys.path.append('..')
 
+    N, C, T, V, M = 99447, 3, 82, 50, 1
     model = Model(
-        num_class=60,
-        num_point=25,
-        num_person=2,
+        num_class=250,
+        num_point=V,
+        num_person=1,
         num_gcn_scales=13,
         num_g3d_scales=6,
-        graph='graph.ntu_rgb_d.AdjMatrixGraph'
+        graph='graph.asl.AdjMatrixGraph'
     )
 
-    N, C, T, V, M = 6, 3, 50, 25, 2
     x = torch.randn(N,C,T,V,M)
     model.forward(x)
 
     print('Model total # params:', count_params(model))
+    print('Estimated model size (MB):', count_params(model) * 4 / 1024 ** 2)

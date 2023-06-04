@@ -47,9 +47,9 @@ class Feeder_asl(Dataset):
                  data_path,
                  label_path,
                  ignore_empty_hands_frames=True,
-                 ignore_window=7, 
+                 ignore_window=3, 
                  max_frame=126,
-                 num_joint=65, 
+                 num_joint=50, 
                  pad_repeat=True,  
                  num_person_in=1,
                  num_person_out=1):
@@ -96,11 +96,11 @@ class Feeder_asl(Dataset):
         sign2idx = pd.read_json(
             self.label_path.parent / "sign_to_prediction_index_map.json", typ="series"
         ).to_dict()
-        self.label_info = pd.read_csv(self.label_path).sort_index()
-        self.label = self.label_info['sign'].map(sign2idx).to_numpy()
+        self.label_info = pd.read_csv(self.label_path).sort_index().reset_index(drop=True)
+        self.label_info["sign_idx"] = self.label_info["sign"].map(sign2idx)
 
         # output data shape (N, C, T, V, M)
-        self.N = len(self.label)  # sample
+        self.N = len(self.label_info)  # sample
         self.C = 3          # channel x,y,z coordinates
         self.T = max_frame  # frame
         self.V = num_joint  # joint
@@ -114,7 +114,7 @@ class Feeder_asl(Dataset):
         # lipsLowerOuter = [146, 91, 181, 84, 17, 314, 405, 321, 375, 291]
         lipsUpperInner = [78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308]
         lipsLowerInner = [78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308]
-        self.lips = lipsUpperInner[::2] + lipsLowerInner[::-2][1:-1]
+        self.lips = lipsUpperInner[::5] + lipsLowerInner[::-5][1:-1]
         assert (78 in self.lips) & (308 in self.lips), "78 & 308 are requried (left/right-most anchor points)."
         # hands 
         lhand_anchor, rhand_anchor = 468, 522
@@ -122,10 +122,10 @@ class Feeder_asl(Dataset):
         self.rhand = list(range(0+rhand_anchor, 21+rhand_anchor))
         # pose 
         pose_anchor = 489
-        ear_eye_nose = [8, 6, 4, 0, 1, 3, 7]
-        upper_body = [22, 16, 14, 12, 24, 23, 11, 13, 15, 21] # 22, 21 are thumbs and 16, 15 are wrists
+        # ear_eye_nose = [8, 6, 4, 0, 1, 3, 7]
+        upper_body = [22, 16, 14, 12, 11, 13, 15, 21] # 22, 21 are thumbs and 16, 15 are wrists
         self.pose_all = list(range(0+pose_anchor, 33+pose_anchor))
-        self.pose = list(np.array(ear_eye_nose + upper_body[2:-2], dtype=int) + pose_anchor)
+        self.pose = list(np.array(upper_body[2:-2], dtype=int) + pose_anchor)
 
         # assertion 
         total = len(self.lips + self.lhand + self.pose + self.rhand)
@@ -136,7 +136,7 @@ class Feeder_asl(Dataset):
 
     def handle_lips(self, frame: np.ndarray):
         # rotate, shift, and scale lips (lips idx 308, 78 vs pose idx 9,10.)
-        s1, s2 = frame[self.lips[0]], frame[self.lips[5]]
+        s1, s2 = frame[self.lips[0]], frame[self.lips[2]]
         d1, d2 = frame[self.pose_all[10]], frame[self.pose_all[9]]
         r = rotation_matrix_from_vectors(s2 - s1, d2 - d1)
         c = np.linalg.norm(d2 - d1) / np.linalg.norm(s2 - s1)
@@ -174,7 +174,7 @@ class Feeder_asl(Dataset):
         cond = (count == window_shape) # True: all empty within range
         if return_nonempty: 
             cond = ~cond
-        idx = np.argwhere(cond).squeeze()
+        idx = np.argwhere(cond).squeeze(axis=1)
         return idx 
 
     @classmethod 
@@ -209,7 +209,7 @@ class Feeder_asl(Dataset):
     def __getitem__(self, index):
         # output shape (C, T, V, M=1)
         # get data
-        sample_path = self.label_info.loc[index, "path"]
+        sample_path = self.label_info["path"].iloc[index]
         data_numpy = load_relevant_data_subset(self.data_path / sample_path) # (T, V, C) 
 
         # delete frames with too long no double hands captured within the lookahead window
@@ -252,7 +252,7 @@ class Feeder_asl(Dataset):
         data_numpy = data_numpy.transpose(2, 0, 1)[..., np.newaxis]
         
         # get corresp. label and label_name (person_id + seq_id)
-        label = self.label[index] 
+        label = self.label_info["sign_idx"].iloc[index]
         tmp = sample_path.split("/")[-2:]
         label_str = tmp[0] + "_" + tmp[1].rstrip(".parquet")
         
@@ -261,7 +261,7 @@ class Feeder_asl(Dataset):
 def gendata(data_path: Path, label_path: Path, 
             data_out_dir: Path, label_out_dir: Path,
             max_frame=126, 
-            num_joint=65, 
+            num_joint=50, 
             num_person_in=1,  # observe the first 5 persons
             num_person_out=1,  # then choose 2 persons with the highest score
             val_ratio=0.05, 
@@ -288,7 +288,7 @@ def gendata(data_path: Path, label_path: Path,
     labels = np.array(labels)
     labels_str = pd.Series(labels_str) # save memory compared to np.array
 
-    # get split idx 
+    # get split idx TODO: GroupShuffleSplit? 
     indices = np.random.permutation(fp.shape[0])
     split_idx = int(fp.shape[0] * val_ratio)
     tra_idx, val_idx = indices[:-split_idx].tolist(), indices[-split_idx:].tolist()
@@ -327,6 +327,9 @@ def gendata(data_path: Path, label_path: Path,
 
 
 if __name__ == '__main__':
+    # some config for gendata()
+    max_frame = 82
+
     # control seed 
     seed = 42 
     np.random.seed(seed)
@@ -346,4 +349,7 @@ if __name__ == '__main__':
     if not os.path.exists(arg.out_folder):
         os.makedirs(arg.out_folder)
     label_path = arg.data_path / 'train.csv'
-    gendata(arg.data_path, label_path, arg.out_folder, arg.out_folder)
+    gendata(
+        arg.data_path, label_path, arg.out_folder, arg.out_folder, 
+        max_frame=max_frame
+    )

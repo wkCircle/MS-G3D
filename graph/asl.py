@@ -5,10 +5,10 @@ sys.path.extend(['../'])
 import numpy as np
 from graph import tools
 
-def get_idxmap(): 
+def get_idxmap(assert_num_node: int=None, return_lips=False, verbose=False): 
     lipsUpperInner = [78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308]
     lipsLowerInner = [78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308]
-    lips = lipsUpperInner[::2] + lipsLowerInner[::-2][1:-1] # len 10 
+    lips = lipsUpperInner[::5] + lipsLowerInner[::-5][1:-1] # len 10 
     assert (78 in lips) & (308 in lips), "78 & 308 are requried (left/right-most anchor points)."
 
     lhand_anchor, rhand_anchor = 468, 522
@@ -16,23 +16,38 @@ def get_idxmap():
     rhand = list(range(0+rhand_anchor, 21+rhand_anchor)) # len 21
 
     pose_anchor = 489
-    ear_eye_nose = [8, 6, 4, 0, 1, 3, 7]
-    upper_body = [22, 16, 14, 12, 24, 23, 11, 13, 15, 21]
-    pose = list(np.array(ear_eye_nose + upper_body[2:-2], dtype=int) + pose_anchor) # len 13
+    # ear_eye_nose = [8, 6, 4, 0, 1, 3, 7]
+    upper_body = [22, 16, 14, 12, 11, 13, 15, 21]
+    pose = list(np.array(upper_body[2:-2], dtype=int) + pose_anchor) # len 13
 
     old_idx = lips + lhand + pose + rhand 
     new_idx = range(len(old_idx))
 
     old2new = dict(zip(old_idx, new_idx))
     new2old = dict(zip(new_idx, old_idx))
+
+    if isinstance(assert_num_node, int): 
+        assert len(old2new) == assert_num_node, (
+            "length of lips+l/r-hands+pose is not equal to the input num_node number.")
+    if verbose: 
+        print(
+            "length of odl2new is {} = \n".format(len(old2new)) + 
+            "\t  lips({})".format(len(lips)) + 
+            "\n\t+ lhand({})".format(len(lhand)) + 
+            "\n\t+ pose({})".format(len(pose)) + 
+            "\n\t+ rhand({})".format(len(rhand))
+        )
+    if return_lips: 
+        return old2new, new2old, lips 
     return old2new, new2old
 
-def get_original_connection_idx(verbose=False): 
+def get_original_connection_idx(lips=None, verbose=False): 
     # lips 
-    lipsUpperInner = [78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308]
-    lipsLowerInner = [78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308]
-    lips = lipsUpperInner[::2] + lipsLowerInner[::-2][1:-1] # len 10 
-    assert (78 in lips) & (308 in lips), "78 & 308 are requried (left/right-most anchor points)."
+    if lips is None: 
+        lipsUpperInner = [78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308]
+        lipsLowerInner = [78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308]
+        lips = lipsUpperInner[::5] + lipsLowerInner[::-5][1:-1] # len 10 
+        assert (78 in lips) & (308 in lips), "78 & 308 are requried (left/right-most anchor points)."
     lips_conn = list(map(lambda x, y: (x,y), lips, lips[1:] + [lips[0]])) # len 10
 
     # hands 
@@ -51,16 +66,16 @@ def get_original_connection_idx(verbose=False):
     # pose 
     pose_anchor = 489
     pose_conn = [
-        (8, 6), (6, 4), (4, 0), (0, 1), (1, 3), (3, 7), 
+        # (8, 6), (6, 4), (4, 0), (0, 1), (1, 3), (3, 7), # ear_eye_nose
         (14, 12), (12, 11), (11, 13), # horizontal shoulder to shoulder shape 
-        (12, 24), (24, 23), (23, 11), # U-shape to form the body 
+        # (12, 24), (24, 23), (23, 11), # U-shape to form the body 
     ] # len 12 
     pose_conn = [(x+pose_anchor, y+pose_anchor) for x, y in pose_conn]
 
     # cross-body connection 
     cross_conn = [
-        (78, 0+pose_anchor), (308, 0+pose_anchor), # dummy node to lips 
-        (78, 12+pose_anchor), (308, 11+pose_anchor), # dummy lips to pose shoulders
+        # (78, 0+pose_anchor), (308, 0+pose_anchor), # dummy nose to lips 
+        (14, 12+pose_anchor), (14, 11+pose_anchor), # dummy lips to pose shoulders
         (0+lhand_anchor, 13+pose_anchor), # left-hand wrist to left elbow
         (0+rhand_anchor, 14+pose_anchor), # right-hand wrist to right elbow
     ]
@@ -76,23 +91,19 @@ def get_original_connection_idx(verbose=False):
         )
     return all_conn
 
-def get_newidx_connections(): 
-    old2new, _ = get_idxmap()
-    old_all_conn = get_original_connection_idx()
+def get_newidx_connections(assert_num_node:int=None, verbose=False): 
+    old2new, _, lips = get_idxmap(assert_num_node, return_lips=True, verbose=verbose)
+    old_all_conn = get_original_connection_idx(lips=lips, verbose=verbose)
     new_all_conn = [ (old2new[x], old2new[y]) for x, y in old_all_conn]
     return new_all_conn
 
 
 class AdjMatrixGraph:
-    num_node = 65
-    self_link = [(i, i) for i in range(num_node)]
-    inward = get_newidx_connections()
-    outward = [(j, i) for (i, j) in inward]
-    neighbor = inward + outward
-
     def __init__(self):
-        self.num_nodes = self.num_node
-        self.edges = self.neighbor
+        self.num_nodes = 50
+        inward = get_newidx_connections(assert_num_node=self.num_nodes, verbose=False)
+        outward = [(j, i) for (i, j) in inward]
+        self.edges = inward + outward
         self.self_loops = [(i, i) for i in range(self.num_nodes)]
         self.A_binary = tools.get_adjacency_matrix(self.edges, self.num_nodes)
         self.A_binary_with_I = tools.get_adjacency_matrix(self.edges + self.self_loops, self.num_nodes)

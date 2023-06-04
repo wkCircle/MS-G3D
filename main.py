@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-from __future__ import print_function
 import os
 import time
 import yaml
@@ -7,7 +6,6 @@ import pprint
 import random
 import pickle
 import shutil
-import inspect
 import argparse
 from pathlib import Path 
 from collections import defaultdict
@@ -50,34 +48,25 @@ def get_parser():
     parser.add_argument(
         '--work-dir',
         type=Path,
-        # required=True,
         help='the work folder for storing results')
-    parser.add_argument('--model_saved_name', default='')
     parser.add_argument(
         '--config',
         type=Path, 
-        default='./config/nturgbd-cross-view/test_bone.yaml',
+        default='./config/asl/train_joint.yaml',
         help='path to the configuration file')
     parser.add_argument(
         '--assume-yes',
         action='store_true',
         help='Say yes to every prompt')
-
     parser.add_argument(
         '--phase',
         default='train',
         help='must be train or test')
-
     parser.add_argument(
         '--seed',
         type=int,
         default=42, # random.randrange(200),
         help='random seed')
-    parser.add_argument(
-        '--log-interval',
-        type=int,
-        default=100,
-        help='the interval for printing messages (#iteration)')
     parser.add_argument(
         '--save-interval',
         type=int,
@@ -101,7 +90,7 @@ def get_parser():
     parser.add_argument(
         '--show-topk',
         type=int,
-        default=[1, 5],
+        default=[1, 5, 10],
         nargs='+',
         help='which Top K accuracy will be shown')
 
@@ -206,12 +195,6 @@ def get_parser():
         '--checkpoint',
         type=Path,
         help='path of previously saved training checkpoint')
-    parser.add_argument(
-        '--debug',
-        type=str2bool,
-        default=False,
-        help='Debug mode; default false')
-
     return parser
 
 
@@ -223,26 +206,14 @@ class Processor():
         self.save_arg()
         if arg.phase == 'train':
             # Added control through the command line
-            arg.train_feeder_args['debug'] = arg.train_feeder_args['debug'] or self.arg.debug
             logdir = Path(arg.work_dir) / 'trainlogs'
-            if not arg.train_feeder_args['debug']:
-                # logdir = arg.model_saved_name
-                if logdir.is_dir():
-                    print(f'log_dir {logdir} already exists')
-                    if arg.assume_yes:
-                        answer = 'y'
-                    else:
-                        answer = input('delete it? [y]/n:')
-                    if answer.lower() in ('y', ''):
-                        shutil.rmtree(logdir)
-                        print('Dir removed:', logdir)
-                    else:
-                        print('Dir not removed:', logdir)
-
-                self.train_writer = SummaryWriter(logdir/'train', 'train')
-                self.val_writer = SummaryWriter(logdir/'val', 'val')
-            else:
-                self.train_writer = SummaryWriter(logdir/'debug', 'debug')
+            if logdir.is_dir():
+                print(f'log_dir {logdir} already exists')
+                shutil.rmtree(logdir)
+                print('Dir removed:', logdir)
+                
+            self.train_writer = SummaryWriter(logdir/'train', 'train')
+            self.val_writer = SummaryWriter(logdir/'val', 'val')
 
         self.load_model()
         self.load_param_groups()
@@ -271,10 +242,6 @@ class Processor():
             self.arg.device) is list else self.arg.device
         self.output_device = output_device
         Model = import_class(self.arg.model)
-
-        # Copy model file and main into the work_dir
-        # shutil.copy2(inspect.getfile(Model), self.arg.work_dir)
-        # shutil.copy2(os.path.join('.', __file__), self.arg.work_dir)
 
         self.model = Model(**self.arg.model_args).cuda(output_device)
         self.loss = nn.CrossEntropyLoss().cuda(output_device)
@@ -374,7 +341,7 @@ class Processor():
                 dataset=Feeder(**self.arg.train_feeder_args),
                 batch_size=self.arg.batch_size,
                 shuffle=True,
-                num_workers=0, #self.arg.num_worker, # NOTE: set to 0 if error.
+                num_workers=self.arg.num_worker, # NOTE: set to 0 if error.
                 drop_last=True,
                 worker_init_fn=ft.partial(worker_seed_fn, seed=self.arg.seed)
             )
@@ -383,24 +350,28 @@ class Processor():
             dataset=Feeder(**self.arg.test_feeder_args),
             batch_size=self.arg.test_batch_size,
             shuffle=False,
-            num_workers=0, #self.arg.num_worker,
+            num_workers=self.arg.num_worker,
             drop_last=False,
             worker_init_fn=ft.partial(worker_seed_fn, seed=self.arg.seed)
         )
 
     def save_arg(self):
         # save arg
-        arg_dict = vars(self.arg)
-        arg_dict = {k: (v.as_posix() if isinstance(v, Path) else v) 
-                    for k, v in arg_dict.items()}
-        if not self.arg.work_dir.is_dir():
-            self.arg.work_dir.mkdir(parents=True, exist_ok=True)
+        def pathlib2str(di: dict): 
+            new_di = {} 
+            for k, v in di.items(): 
+                if isinstance(v, Path): 
+                    new_di[k] = v.as_posix() 
+                elif isinstance(v, dict): 
+                    new_di[k] = pathlib2str(v)
+                else: 
+                    new_di[k] = v
+            return new_di 
+        # save arg
+        arg_dict = pathlib2str(vars(self.arg))
+        self.arg.work_dir.mkdir(parents=True, exist_ok=True)
         with (self.arg.work_dir/'config.yaml').open('w') as f:
-            yaml.safe_dump(arg_dict, f, )
-
-    def print_time(self):
-        localtime = time.asctime(time.localtime(time.time()))
-        self.print_log(f'Local current time: {localtime}')
+            yaml.safe_dump(arg_dict, f)
 
     def print_log(self, s: str, print_time=True):
         if print_time:
@@ -420,10 +391,9 @@ class Processor():
         self.record_time()
         return split_time
 
-    def save_states(self, epoch, states, out_folder, out_name):
-        out_folder_path = self.arg.work_dir / out_folder
-        out_path = out_folder_path / out_name
-        out_folder_path.mkdir(parents=True, exist_ok=True)
+    def save_states(self, states, out_folder, out_name):
+        out_path = self.arg.work_dir / out_folder /out_name
+        out_path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(states, out_path)
 
     def save_checkpoint(self, epoch, out_folder='checkpoints'):
@@ -434,7 +404,7 @@ class Processor():
         }
 
         checkpoint_name = f'checkpoint-{epoch}-fwbz{self.arg.forward_batch_size}-{int(self.global_step)}.pt'
-        self.save_states(epoch, state_dict, out_folder, checkpoint_name)
+        self.save_states(state_dict, out_folder, checkpoint_name)
 
     def save_weights(self, epoch, out_folder='weights'):
         state_dict = self.model.state_dict()
@@ -444,7 +414,7 @@ class Processor():
         ])
 
         weights_name = f'weights-{epoch}-{int(self.global_step)}.pt'
-        self.save_states(epoch, weights, out_folder, weights_name)
+        self.save_states(weights, out_folder, weights_name)
 
     def train(self, epoch, save_model=False):
         self.model.train()
@@ -594,7 +564,7 @@ class Processor():
                 self.best_acc_epoch = epoch + 1
 
             print('Accuracy: ', accuracy, ' model: ', self.arg.work_dir)
-            if self.arg.phase == 'train' and not self.arg.debug:
+            if self.arg.phase == 'train':
                 self.val_writer.add_scalar('loss', loss, self.global_step)
                 self.val_writer.add_scalar('loss_l1', l1, self.global_step)
                 self.val_writer.add_scalar('acc', accuracy, self.global_step)
@@ -618,6 +588,8 @@ class Processor():
                 self.eval(epoch, loader_name=['test'])
 
             num_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+            checkpoint_name = f'checkpoint-{self.best_acc_epoch}-fwbz{self.arg.forward_batch_size}-{int(self.global_step)}.pt'
+            weights_name = f'weights-{self.best_acc_epoch}-{int(self.global_step)}.pt'
             self.print_log(f'Best accuracy: {self.best_acc}')
             self.print_log(f'Epoch number: {self.best_acc_epoch}')
             self.print_log(f'Model name: {self.arg.work_dir}')
@@ -627,13 +599,13 @@ class Processor():
             self.print_log(f'Batch Size: {self.arg.batch_size}')
             self.print_log(f'Forward Batch Size: {self.arg.forward_batch_size}')
             self.print_log(f'Test Batch Size: {self.arg.test_batch_size}')
+            self.print_log(f'Best checkpoint file: {checkpoint_name}')
+            self.print_log(f'Best weights file: {weights_name}')
 
         elif self.arg.phase == 'test':
             if not self.arg.test_feeder_args['debug']:
                 wf = self.arg.work_dir / 'wrong-samples.txt'
                 rf = self.arg.work_dir / 'right-samples.txt'
-            else:
-                wf = rf = None
             if self.arg.weights is None:
                 raise ValueError('Please appoint --weights.')
 
@@ -646,15 +618,14 @@ class Processor():
                 wrong_file=wf,
                 result_file=rf
             )
-
             self.print_log('Done.\n')
 
 
 def main():
     parser = get_parser()
 
-    # load arg form config file as default arg (user input command comes to 1st priority)
-    p = parser.parse_args()
+    # load arg form config file as default arg (user input cmd comes to 1st priority)
+    p = parser.parse_args([])
     if p.config is not None:
         with open(p.config, 'r') as f:
             default_arg = yaml.safe_load(f)
@@ -663,7 +634,7 @@ def main():
             assert k in key, f'WRONG ARG {k}'
         parser.set_defaults(**default_arg)
 
-    arg = parser.parse_args()
+    arg = parser.parse_args([])
     init_seed(arg.seed)
     processor = Processor(arg)
     processor.start()
